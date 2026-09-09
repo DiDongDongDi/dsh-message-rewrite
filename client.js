@@ -16,7 +16,7 @@
  * 变量（--fg-muted 等），浅/深色主题自动适配。
  */
 window.__ModuleLoader__.load({
-  id: "@deepseek-ai/message-rewrite",
+  id: "dsh-message-rewrite",
   factory: function (require) {
     var module = { exports: {} };
     var exports = module.exports;
