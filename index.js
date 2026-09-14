@@ -6,12 +6,12 @@
 //      agent.followup(message) 放入 inbox 并唤醒 driver；
 //   4. 在 agent/pre-step（waterfall、prepend）里拦截：当 driver 准备把该
 //      消息 append 成普通 user/message 时，包一层 session.append —— 使这次
-//      append 携带 surfaceOp:{op:"replace", start:目标seq, end:尾部节点}，
+//      append 携带 surfaceOp:{op:"replace", startSeq, endSeq}，
 //      把被编辑消息及其后的旧回复从消息表面替换掉（审计日志仍追加保留）。
 //
 // 依赖内核 API（0.1.5-rc.1 实测存在）：
 //   - ctx.on("agent/pre-step", ({agent,messages,signal}, next), {prepend:true})
-//   - agent.session.append(type, data, {surfaceOp, sourceEventSeqs})
+//   - agent.session.append(type, data, {surfaceOp:{op:"replace",startSeq,endSeq}, sourceEventSeqs})
 //   - agent.followup(message) / agent.status / agent.session.surface.nodes
 //   - createUserMessage from @deepseek-ai/dsh-llm
 //   - 注册 /dsh-rewrite HTTP 路由：必须走 ctx.webServer.register（见下方注释）
@@ -175,7 +175,7 @@ module.exports.apply = function apply(ctx) {
       restore();
       try {
         const event = Reflect.apply(original, this, [type, data, {
-          surfaceOp: { op: 'replace', start: pending.targetSeq, end },
+          surfaceOp: { op: 'replace', startSeq: pending.targetSeq, endSeq: end },
           sourceEventSeqs: [...shadowed],
         }]);
         resolvePending(pending);
