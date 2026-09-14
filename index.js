@@ -14,13 +14,13 @@
 //   - agent.session.append(type, data, {surfaceOp, sourceEventSeqs})
 //   - agent.followup(message) / agent.status / agent.session.surface.nodes
 //   - createUserMessage from @deepseek-ai/dsh-llm
-//   - connection.rpc.handle 会经 owner.webServer.register 挂路由 → 必须 inject webServer
+//   - 注册 /dsh-rewrite HTTP 路由：必须走 ctx.webServer.register（见下方注释）
 //
 // CJS 规范（AGENTS.md）：dsh 内部包一律在 apply() 内延迟 require。
 'use strict';
 
 module.exports.name = 'dsh-message-rewrite';
-// DSH 0.1.5-rc.1：rpc.handle → owner.webServer.register；缺 webServer 会 fatal boot
+// webServer：自挂 /dsh-rewrite；connection：requestRejection 鉴权；agents：rewrite 业务
 module.exports.inject = ['connection', 'agents', 'webServer'];
 
 function messageIdOf(value) {
@@ -464,26 +464,109 @@ module.exports.apply = function apply(ctx) {
     }
   }
 
-  // 注册 RPC channel（client fetch /dsh-rewrite/rewrite）
-  const rpc = ctx && ctx.connection && ctx.connection.rpc;
-  if (rpc && typeof rpc.handle === 'function') {
-    rpc.handle('/dsh-rewrite', async (endpoint, payload, _signal) => {
-      if (endpoint === 'rewrite') return handleRewrite(payload);
-      if (endpoint === 'list') return handleList(payload);
-      if (endpoint === 'debug') return handleDebug(payload);
-      if (endpoint === 'canEdit') {
-        const request = (payload && payload.value) || payload || {};
-        const agent = ctx.agents && ctx.agents.get(request.sessionId);
-        if (!agent) return { ok: true, value: { editable: false, reason: 'session-not-found' } };
-        const source = agent.session.snapshotEvents()[request.userSeq];
-        const editable = !!source && source.type === 'user/message' && !!source.data && !!source.data.source && source.data.source.kind === 'user'
-          && agent.session.surface.nodes.includes(request.userSeq);
-        return { ok: true, value: { editable, busy: agent.status !== 'idle' } };
-      }
-      return { ok: false, error: 'unknown endpoint: ' + endpoint };
-    }, { authority: 'loopback' });
-    console.log('[dsh-message-rewrite] 已注册 RPC channel /dsh-rewrite');
-  } else {
-    console.error('[dsh-message-rewrite] 无 rpc.handle 可用，rewrite 功能不可用');
+  const rpcHandler = async (endpoint, payload) => {
+    if (endpoint === 'rewrite') return handleRewrite(payload);
+    if (endpoint === 'list') return handleList(payload);
+    if (endpoint === 'debug') return handleDebug(payload);
+    if (endpoint === 'canEdit') {
+      const request = (payload && payload.value) || payload || {};
+      const agent = ctx.agents && ctx.agents.get(request.sessionId);
+      if (!agent) return { ok: true, value: { editable: false, reason: 'session-not-found' } };
+      const source = agent.session.snapshotEvents()[request.userSeq];
+      const editable = !!source && source.type === 'user/message' && !!source.data && !!source.data.source && source.data.source.kind === 'user'
+        && agent.session.surface.nodes.includes(request.userSeq);
+      return { ok: true, value: { editable, busy: agent.status !== 'idle' } };
+    }
+    return { ok: false, error: 'unknown endpoint: ' + endpoint };
+  };
+
+  // DSH 0.1.5-rc.1 实测：connection.rpc.handle 在 loader fiber 下 this.ctx
+  // 未绑定到调用方（仍是 connection 插件自己的 fiber），随后 owner.webServer
+  // 抛 cannot get property "webServer" without inject——即便本插件已 inject webServer。
+  // 因此改为与 session-unarchive 相同：直接 ctx.webServer.register，自行鉴权 + RPC 信封。
+  const webServer = ctx.get('webServer');
+  if (!webServer) {
+    console.error('[dsh-message-rewrite] webServer unavailable，rewrite 功能不可用');
+    return;
   }
+  ctx.effect(() => webServer.register({
+    kind: 'prefix',
+    path: '/dsh-rewrite',
+    handler: async (req, res) => {
+      const rejection = ctx.connection.requestRejection(req);
+      if (rejection !== undefined) {
+        res.writeHead(rejection);
+        res.end(rejection === 401 ? 'unauthorized' : 'forbidden');
+        return;
+      }
+      if (req.method !== 'POST') {
+        res.writeHead(404);
+        res.end('not found');
+        return;
+      }
+      const url = new URL(req.url || '/', 'http://127.0.0.1');
+      const prefix = '/dsh-rewrite/';
+      if (!url.pathname.startsWith(prefix)) {
+        res.writeHead(404);
+        res.end('not found');
+        return;
+      }
+      const endpoint = url.pathname.slice(prefix.length);
+      if (!endpoint || endpoint.includes('/')) {
+        res.writeHead(404);
+        res.end('not found');
+        return;
+      }
+      const chunks = [];
+      for await (const chunk of req) chunks.push(chunk);
+      let body;
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+      } catch {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          type: 'server-response',
+          rpcId: 'invalid-request',
+          result: { ok: false, error: { code: 'gateway/bad-request', message: 'body is not JSON' } },
+        }));
+        return;
+      }
+      if (!body || body.type !== 'client-request' || typeof body.rpcId !== 'string') {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          type: 'server-response',
+          rpcId: typeof body?.rpcId === 'string' ? body.rpcId : 'invalid-request',
+          result: { ok: false, error: { code: 'gateway/bad-request', message: 'invalid client-request message' } },
+        }));
+        return;
+      }
+      if (body.method !== endpoint) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          type: 'server-response',
+          rpcId: body.rpcId,
+          result: {
+            ok: false,
+            error: {
+              code: 'gateway/bad-request',
+              message: `method ${JSON.stringify(body.method)} does not match endpoint ${JSON.stringify(endpoint)}`,
+              details: { issues: [] },
+            },
+          },
+        }));
+        return;
+      }
+      let result;
+      try {
+        result = await rpcHandler(endpoint, body.payload);
+      } catch (err) {
+        res.writeHead(500);
+        res.end(`handler failure: ${err instanceof Error ? err.message : String(err)}`);
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'server-response', rpcId: body.rpcId, result }));
+    },
+  }), 'dsh-message-rewrite: /dsh-rewrite');
+  console.log('[dsh-message-rewrite] 已注册 /dsh-rewrite via webServer');
 };
