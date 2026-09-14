@@ -1,5 +1,5 @@
 // dsh-message-rewrite 宿主半：原地编辑历史用户消息 → 同会话截断重跑。
-// 机制（适配 DSH 内核 0.1.2-rc.1 / dsh-agent-loop）：
+// 机制（适配 DSH 内核 0.1.5-rc.1 / dsh-agent-loop）：
 //   1. client 调 RPC /dsh-rewrite/rewrite { sessionId, userSeq, text }
 //   2. host 校验 agent idle、目标消息可见；
 //   3. 构造新 user message（source.rewrite 标注 targetSeq/targetTurn），
@@ -9,17 +9,19 @@
 //      append 携带 surfaceOp:{op:"replace", start:目标seq, end:尾部节点}，
 //      把被编辑消息及其后的旧回复从消息表面替换掉（审计日志仍追加保留）。
 //
-// 依赖内核 API（0.1.2-rc.1 实测存在）：
+// 依赖内核 API（0.1.5-rc.1 实测存在）：
 //   - ctx.on("agent/pre-step", ({agent,messages,signal}, next), {prepend:true})
 //   - agent.session.append(type, data, {surfaceOp, sourceEventSeqs})
 //   - agent.followup(message) / agent.status / agent.session.surface.nodes
 //   - createUserMessage from @deepseek-ai/dsh-llm
+//   - connection.rpc.handle 会经 owner.webServer.register 挂路由 → 必须 inject webServer
 //
 // CJS 规范（AGENTS.md）：dsh 内部包一律在 apply() 内延迟 require。
 'use strict';
 
 module.exports.name = 'dsh-message-rewrite';
-module.exports.inject = ['connection', 'agents'];
+// DSH 0.1.5-rc.1：rpc.handle → owner.webServer.register；缺 webServer 会 fatal boot
+module.exports.inject = ['connection', 'agents', 'webServer'];
 
 function messageIdOf(value) {
   if (typeof value !== 'object' || value === null || !('id' in value)) return undefined;

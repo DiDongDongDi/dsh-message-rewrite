@@ -56,14 +56,14 @@ bash ~/bin/dsh-server-restart   # 重启后刷新页面
 
 > Agent 运行中提交会提示「请先等待本轮结束」（不静默吞点击）。编辑中间消息会自动 fork 到新会话。
 
-## 工作原理（适配 DSH 内核 0.1.2-rc.1）
+## 工作原理（适配 DSH 内核 0.1.5-rc.1）
 
-- **host**（`index.js`，CJS，inject `connection` + `agents`）
+- **host**（`index.js`，CJS，inject `connection` + `agents` + `webServer`）
   - RPC `/dsh-rewrite/list`：列出会话 surface 上可编辑的用户消息（seq + 文本 + id + rewrite 元数据）。
   - RPC `/dsh-rewrite/rewrite`：校验 agent idle → 构造带 `source.rewrite` 的新 user message → `agent.followup()` 入 inbox 唤醒 driver → 在 `agent/pre-step`（prepend）拦截该消息的 append，包成 `surfaceOp:{op:"replace", start, end}` + `sourceEventSeqs`，旧尾部从表面移除（审计日志保留）。
 - **client**（`client.js`）：`__ModuleLoader__` 加载的 web 客户端；扫描官方消息列表（`data-chat-flow-kind="user"` + `data-chat-anchor-key`），用 uuid 与 host list 精确对齐挂 ✎ 按钮；自绘「✎ 已编辑」气泡（双锚点定位，兼容虚拟滚动）；被 replace shadow 的旧行打 `data-message-rewrite-discarded` 隐藏。
 
-## 关键内核 API（0.1.2-rc.1 实测）
+## 关键内核 API（0.1.5-rc.1 实测）
 
 - `ctx.on("agent/pre-step", ({agent, messages, signal}, next), {prepend:true})`
 - `agent.session.append(type, data, {surfaceOp:{op:"replace",start,end}, sourceEventSeqs})`
@@ -81,7 +81,7 @@ bash ~/bin/dsh-server-restart   # 重启后刷新页面
 
 - 只对「用户消息」行挂编辑按钮；AI 回复行暂不支持编辑（可扩展「重新生成」）。
 - 依赖 DSH 桌面 App / Web 的 profile 插件体系（Cordis + `__ModuleLoader__`），非独立 CLI。
-- 内核 API 随 DSH 版本演进可能变化（适配目标：0.1.2-rc.1）。
+- 内核 API 随 DSH 版本演进可能变化（适配目标：0.1.5-rc.1）。
 
 ## License
 
