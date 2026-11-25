@@ -285,12 +285,20 @@ window.__ModuleLoader__.load({
       postRpc("list", {}).then(function (res) {
         if (!res.ok) return;
         var sessions = (res.value && res.value.sessions) || [];
+        // list 不带 sessionId 时会返回全部 live agent。targetTurn / targetSeq
+        // 只在各自会话里有意义；拿别的会话的 targetTurn 去标当前 DOM，会把
+        // 当前会话同号轮次（用户气泡和已回答内容）整轮 display:none。
+        // 当前会话还没就绪时先不隐藏，避免用上一个会话的轮次号误伤。
+        var current = currentSessionId();
+        var scoped = current
+          ? sessions.filter(function (session) { return session.sessionId === current; })
+          : [];
         // 先统一收集 rewrite 信息：discard turn 集合 + 气泡渲染数据。
         // 只隐藏"被编辑消息那一轮"（targetTurn）的旧行——该消息之后用户
         // 后续新发的对话轮次全部保留（不隐藏）。
         var discardTurns = {};  // turn -> true
-        var rewriteList = [];   // 全部 rewrite 记录（含 sid/targetId/text 等）
-        sessions.forEach(function (session) {
+        var rewriteList = [];   // 当前会话的 rewrite 记录（含 sid/targetId/text 等）
+        scoped.forEach(function (session) {
           (session.rewrites || []).forEach(function (rw) {
             if (rw && Number.isSafeInteger(rw.targetTurn)) {
               discardTurns[String(rw.targetTurn)] = true;
@@ -399,11 +407,14 @@ window.__ModuleLoader__.load({
       rewrites.forEach(function (rw) {
         if (!superseded[String(rw.seq)]) validSeqs[String(rw.seq)] = true;
       });
+      var current = currentSessionId();
       var olds = document.querySelectorAll("[data-mr-bubble]");
       for (var i = 0; i < olds.length; i++) {
         var ob = olds[i];
         var oseq = ob.getAttribute("data-mr-bubble");
-        if (!validSeqs[oseq]) { if (ob.parentNode) ob.parentNode.removeChild(ob); }
+        var obSid = ob.getAttribute("data-mr-session") || "";
+        var foreign = current && obSid && obSid !== current;
+        if (foreign || !validSeqs[oseq]) { if (ob.parentNode) ob.parentNode.removeChild(ob); }
       }
       // 若没有编辑中的气泡但 active 仍为 true（上次重建丢失导致卡死），复位
       if (active && !document.querySelector(".dsh-mr-bubble.dsh-mr-bubble-editing, [data-chat-flow-kind=user].dsh-mr-editing")) {
