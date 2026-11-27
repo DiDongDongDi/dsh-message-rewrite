@@ -1,6 +1,6 @@
 {
   "name": "dsh-message-rewrite",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Codex 风格消息原地编辑（DeepSeek Harness / DSH 插件）：hover 历史用户消息 → ✎ 编辑 → 同会话从编辑点截断并重新生成后续回复。",
   "main": "./index.js",
   "exports": {

@@ -260,9 +260,62 @@ window.__ModuleLoader__.load({
     function hideError(p) { if (p) { p.textContent = ""; p.style.display = "none"; } }
 
     // ---------- 会话 id ----------
+    // SessionListState 没有 current 字段（只有 ids / byId / phase）。
+    // 以前读 snapshot.current 永远是空，改写气泡被整段跳过，对话区只剩
+    // 官方仍渲染的 append 原文；replace 出来的新用户消息官方不画。
     var _sessionId = null;
     var sessionsService = null; // 由 apply 注入（供 fork 后切会话）
-    function currentSessionId() { return _sessionId; }
+    var pluginCtx = null;
+
+    function sessionIdString(value) {
+      if (typeof value === "string" && value.indexOf("session-") === 0) return value;
+      if (value && typeof value === "object") {
+        if (typeof value.sessionId === "string" && value.sessionId.indexOf("session-") === 0) return value.sessionId;
+        if (value.value) return sessionIdString(value.value);
+      }
+      return "";
+    }
+
+    /** 打开中的会话。列表快照没有 current，要自己从主视图引用解析。 */
+    function resolveCurrentSessionId() {
+      var ctx = pluginCtx;
+      try {
+        var workspace = ctx && (ctx.uiWorkspace || (ctx.get && ctx.get("uiWorkspace")));
+        var fromMain = sessionIdString(workspace && workspace.mainReference && workspace.mainReference.sessionId);
+        if (fromMain) return fromMain;
+      } catch (e) { /* ignore */ }
+      try {
+        var list = sessionsService && sessionsService.list;
+        var snapshot = list && list.getSnapshot && list.getSnapshot();
+        var fromCurrent = sessionIdString(snapshot && snapshot.current);
+        if (fromCurrent) return fromCurrent;
+        var byId = snapshot && snapshot.byId;
+        if (byId) {
+          var ids = Array.isArray(snapshot.ids) ? snapshot.ids : Object.keys(byId);
+          for (var i = 0; i < ids.length; i++) {
+            var row = byId[ids[i]];
+            var retained = row && row.retainedBy;
+            if (retained && Number(retained.mainView) > 0) return ids[i];
+          }
+        }
+      } catch (e2) { /* ignore */ }
+      try {
+        var stored = sessionIdString(JSON.parse(window.localStorage.getItem("dsh.sessions.current") || "null"));
+        if (stored) return stored;
+      } catch (e3) { /* ignore */ }
+      try {
+        var params = new URLSearchParams(String(window.location.hash || "").replace(/^#/, ""));
+        var fromHash = sessionIdString(params.get("session"));
+        if (fromHash) return fromHash;
+      } catch (e4) { /* ignore */ }
+      return "";
+    }
+
+    function currentSessionId() {
+      var id = resolveCurrentSessionId();
+      if (id) _sessionId = id;
+      return id || _sessionId;
+    }
 
     // ---------- 核心：扫描 + 挂载 ----------
     /**
@@ -674,27 +727,16 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       injectStyles();
 
-      // 尽力订阅"当前会话"（用于编辑提交时校验；拿不到也没关系，
-      // host list/rewrite 已支持按需定位，按钮上直接存 sessionId）
+      pluginCtx = ctx;
+      // 当前会话不在 list.current 上。每次 rescan 用 resolveCurrentSessionId
+      // 重新解析；这里只订阅列表变化，好在切换主视图后立刻重画改写气泡。
       var sessionsSvc = null;
       try { sessionsSvc = ctx && (ctx.sessions || (ctx.get && ctx.get("sessions"))); } catch (e) { /* ignore */ }
       sessionsService = sessionsSvc;
-      if (sessionsSvc && sessionsSvc.list && sessionsSvc.list.getSnapshot) {
+      if (sessionsSvc && sessionsSvc.list && sessionsSvc.list.subscribe) {
         try {
-          var cur = sessionsSvc.list.getSnapshot().current;
-          if (cur) _sessionId = cur;
-        } catch (e) { /* ignore */ }
-        if (sessionsSvc.list.subscribe) {
-          try {
-            sessionsSvc.list.subscribe(function () {
-              try {
-                var c2 = sessionsSvc.list.getSnapshot().current;
-                if (c2 && c2 !== _sessionId) { _sessionId = c2; }
-              } catch (e2) { /* ignore */ }
-              scheduleRescan();
-            });
-          } catch (e3) { /* ignore */ }
-        }
+          sessionsSvc.list.subscribe(function () { scheduleRescan(); });
+        } catch (e3) { /* ignore */ }
       }
 
       // 用 MutationObserver 监听消息区变化（新消息、切会话、滚动加载历史）
